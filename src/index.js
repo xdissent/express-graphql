@@ -103,6 +103,10 @@ export type OptionsData = {
   graphiql?: ?boolean,
 
   /**
+   * A websocket endpoint for subscriptions
+   */
+  subscriptionsEndpoint?: ?string,
+  /**
    * A resolver function to use when one is not provided by the schema.
    * If not provided, the default field resolver is used (which looks for a
    * value or method on the source value with the field's name).
@@ -161,6 +165,7 @@ function graphqlHTTP(options: Options): Middleware {
     let formatErrorFn;
     let extensionsFn;
     let showGraphiQL;
+    let subscriptionsEndpoint;
     let query;
 
     let documentAST;
@@ -201,9 +206,8 @@ function graphqlHTTP(options: Options): Middleware {
         const rootValue = optionsData.rootValue;
         const fieldResolver = optionsData.fieldResolver;
         const graphiql = optionsData.graphiql;
-
+        subscriptionsEndpoint = optionsData.subscriptionsEndpoint;
         context = optionsData.context || request;
-
         let validationRules = specifiedRules;
         if (optionsData.validationRules) {
           validationRules = validationRules.concat(optionsData.validationRules);
@@ -345,6 +349,7 @@ function graphqlHTTP(options: Options): Middleware {
             variables,
             operationName,
             result,
+            subscriptionsEndpoint,
           });
           return sendResponse(response, 'text/html', payload);
         }
