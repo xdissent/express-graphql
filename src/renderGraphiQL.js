@@ -1,29 +1,30 @@
-/**
- *  Copyright (c) 2015-present, Facebook, Inc.
- *  All rights reserved.
- *
- *  This source code is licensed under the BSD-style license found in the
- *  LICENSE file in the root directory of this source tree. An additional grant
- *  of patent rights can be found in the PATENTS file in the same directory.
- *
- *  @flow strict
- */
+// @flow strict
 
-type GraphiQLData = {
+type GraphiQLData = {|
   query: ?string,
-  variables: ?{ [name: string]: mixed },
+  variables: ?{ +[name: string]: mixed, ... },
   operationName: ?string,
   result?: mixed,
+  options: GraphiQLOptions,
   subscriptionsEndpoint?: ?string,
-};
+|};
 
-// Current latest version of GraphiQL.
-const GRAPHIQL_VERSION = '0.11.11';
+export type GraphiQLOptions = {|
+  /**
+   * An optional GraphQL string to use when no query is provided and no stored
+   * query exists from a previous session.  If undefined is provided, GraphiQL
+   * will use its own default query.
+   */
+  defaultQuery?: ?string,
+|};
 
 // Ensures string values are safe to be used within a <script> tag.
 function safeSerialize(data) {
   return data ? JSON.stringify(data).replace(/\//g, '\\/') : 'undefined';
 }
+
+// Implemented as Babel transformation, see ../resources/load-staticly-from-npm.js
+declare function loadFileStaticlyFromNPM(npmPath: string): string;
 
 /**
  * When express-graphql receives a request which does not Accept JSON, but does
@@ -41,6 +42,7 @@ export function renderGraphiQL(data: GraphiQLData): string {
     ? JSON.stringify(data.result, null, 2)
     : null;
   const operationName = data.operationName;
+  const defaultQuery = data.options.defaultQuery;
   const subscriptionsEndpoint = data.subscriptionsEndpoint;
 
   let subscriptionScripts = '';
@@ -76,12 +78,30 @@ add "&raw" to the end of the URL within a browser.
       height: 100vh;
     }
   </style>
-  <link href="//cdn.jsdelivr.net/npm/graphiql@${GRAPHIQL_VERSION}/graphiql.css" rel="stylesheet" />
-  <script src="//cdn.jsdelivr.net/es6-promise/4.0.5/es6-promise.auto.min.js"></script>
-  <script src="//cdn.jsdelivr.net/fetch/0.9.0/fetch.min.js"></script>
-  <script src="//cdn.jsdelivr.net/react/15.4.2/react.min.js"></script>
-  <script src="//cdn.jsdelivr.net/react/15.4.2/react-dom.min.js"></script>
-  <script src="//cdn.jsdelivr.net/npm/graphiql@${GRAPHIQL_VERSION}/graphiql.min.js"></script>
+  <style>
+    // graphiql/graphiql.css
+    ${loadFileStaticlyFromNPM('graphiql/graphiql.css')}
+  </style>
+  <script>
+    // promise-polyfill/dist/polyfill.min.js
+    ${loadFileStaticlyFromNPM('promise-polyfill/dist/polyfill.min.js')}
+  </script>
+  <script>
+    // unfetch/dist/unfetch.umd.js
+    ${loadFileStaticlyFromNPM('unfetch/dist/unfetch.umd.js')}
+  </script>
+  <script>
+    // react/umd/react.production.min.js
+    ${loadFileStaticlyFromNPM('react/umd/react.production.min.js')}
+  </script>
+  <script>
+    // react-dom/umd/react-dom.production.min.js
+    ${loadFileStaticlyFromNPM('react-dom/umd/react-dom.production.min.js')}
+  </script>
+  <script>
+    // graphiql/graphiql.min.js
+    ${loadFileStaticlyFromNPM('graphiql/graphiql.min.js')}
+  </script>
   ${subscriptionScripts}
 </head>
 <body>
@@ -181,6 +201,7 @@ add "&raw" to the end of the URL within a browser.
         response: ${safeSerialize(resultString)},
         variables: ${safeSerialize(variablesString)},
         operationName: ${safeSerialize(operationName)},
+        defaultQuery: ${safeSerialize(defaultQuery)},
       }),
       document.getElementById('graphiql')
     );
