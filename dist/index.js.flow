@@ -1,40 +1,35 @@
-/**
- *  Copyright (c) 2015-present, Facebook, Inc.
- *  All rights reserved.
- *
- *  This source code is licensed under the BSD-style license found in the
- *  LICENSE file in the root directory of this source tree. An additional grant
- *  of patent rights can be found in the PATENTS file in the same directory.
- *
- *  @flow strict
- */
+// @flow strict
 
+import { type IncomingMessage, type ServerResponse } from 'http';
+import url from 'url';
 import accepts from 'accepts';
+import httpError from 'http-errors';
 import {
   Source,
-  validateSchema,
   parse,
   validate,
   execute,
   formatError,
+  validateSchema,
   getOperationAST,
   specifiedRules,
+  type ASTVisitor,
+  type DocumentNode,
+  type ValidationRule,
+  type ValidationContext,
+  type ExecutionArgs,
+  type ExecutionResult,
+  type GraphQLError,
+  type GraphQLSchema,
+  type GraphQLFieldResolver,
+  type GraphQLTypeResolver,
 } from 'graphql';
-import httpError from 'http-errors';
-import url from 'url';
 
 import { parseBody } from './parseBody';
-import { renderGraphiQL } from './renderGraphiQL';
+import { renderGraphiQL, type GraphiQLOptions } from './renderGraphiQL';
 
-import type {
-  DocumentNode,
-  GraphQLError,
-  GraphQLSchema,
-  GraphQLFieldResolver,
-  ValidationContext,
-  ASTVisitor,
-} from 'graphql';
-import type { $Request, $Response } from 'express';
+type $Request = IncomingMessage;
+type $Response = ServerResponse & {| json?: ?(data: mixed) => void |};
 
 /**
  * Used to configure the graphqlHTTP middleware by providing a schema
@@ -51,7 +46,8 @@ export type Options =
     ) => OptionsResult)
   | OptionsResult;
 export type OptionsResult = OptionsData | Promise<OptionsData>;
-export type OptionsData = {
+
+export type OptionsData = {|
   /**
    * A GraphQL schema from graphql-js.
    */
@@ -73,17 +69,45 @@ export type OptionsData = {
   pretty?: ?boolean,
 
   /**
+   * An optional array of validation rules that will be applied on the document
+   * in additional to those defined by the GraphQL spec.
+   */
+  validationRules?: ?$ReadOnlyArray<(ValidationContext) => ASTVisitor>,
+
+  /**
+   * An optional function which will be used to validate instead of default `validate`
+   * from `graphql-js`.
+   */
+  customValidateFn?: ?(
+    schema: GraphQLSchema,
+    documentAST: DocumentNode,
+    rules: $ReadOnlyArray<ValidationRule>,
+  ) => $ReadOnlyArray<GraphQLError>,
+
+  /**
+   * An optional function which will be used to execute instead of default `execute`
+   * from `graphql-js`.
+   */
+  customExecuteFn?: ?(args: ExecutionArgs) => Promise<ExecutionResult>,
+
+  /**
    * An optional function which will be used to format any errors produced by
    * fulfilling a GraphQL operation. If no function is provided, GraphQL's
    * default spec-compliant `formatError` function will be used.
    */
-  formatError?: ?(error: GraphQLError) => mixed,
+  customFormatErrorFn?: ?(error: GraphQLError) => mixed,
 
   /**
-   * An optional array of validation rules that will be applied on the document
-   * in additional to those defined by the GraphQL spec.
+   * An optional function which will be used to create a document instead of
+   * the default `parse` from `graphql-js`.
    */
-  validationRules?: ?Array<(ValidationContext) => ASTVisitor>,
+  customParseFn?: ?(source: Source) => DocumentNode,
+
+  /**
+   * `formatError` is deprecated and replaced by `customFormatErrorFn`. It will
+   *  be removed in version 1.0.0.
+   */
+  formatError?: ?(error: GraphQLError) => mixed,
 
   /**
    * An optional function for adding additional metadata to the GraphQL response
@@ -95,12 +119,13 @@ export type OptionsData = {
    *
    * This function may be async.
    */
-  extensions?: ?(info: RequestInfo) => { [key: string]: mixed },
+  extensions?: ?(info: RequestInfo) => { [key: string]: mixed, ... },
 
   /**
    * A boolean to optionally enable GraphiQL mode.
+   * Alternatively, instead of `true` you can pass in an options object.
    */
-  graphiql?: ?boolean,
+  graphiql?: ?boolean | ?GraphiQLOptions,
 
   /**
    * A websocket endpoint for subscriptions
@@ -111,13 +136,20 @@ export type OptionsData = {
    * If not provided, the default field resolver is used (which looks for a
    * value or method on the source value with the field's name).
    */
-  fieldResolver?: ?GraphQLFieldResolver<any, any>,
-};
+  fieldResolver?: ?GraphQLFieldResolver<mixed, mixed>,
+
+  /**
+   * A type resolver function to use when none is provided by the schema.
+   * If not provided, the default type resolver is used (which looks for a
+   * `__typename` field or alternatively calls the `isTypeOf` method).
+   */
+  typeResolver?: ?GraphQLTypeResolver<mixed, mixed>,
+|};
 
 /**
  * All information about a GraphQL request.
  */
-export type RequestInfo = {
+export type RequestInfo = {|
   /**
    * The parsed GraphQL document.
    */
@@ -126,7 +158,7 @@ export type RequestInfo = {
   /**
    * The variable values used at runtime.
    */
-  variables: ?{ [name: string]: mixed },
+  variables: ?{ +[name: string]: mixed, ... },
 
   /**
    * The (optional) operation name requested.
@@ -142,7 +174,7 @@ export type RequestInfo = {
    * A value to pass as the context to the graphql() function.
    */
   context?: ?mixed,
-};
+|};
 
 type Middleware = (request: $Request, response: $Response) => Promise<void>;
 
@@ -162,9 +194,12 @@ function graphqlHTTP(options: Options): Middleware {
     let context;
     let params;
     let pretty;
-    let formatErrorFn;
+    let formatErrorFn = formatError;
+    let validateFn = validate;
+    let executeFn = execute;
+    let parseFn = parse;
     let extensionsFn;
-    let showGraphiQL;
+    let showGraphiQL = false;
     let subscriptionsEndpoint;
     let query;
 
@@ -205,13 +240,11 @@ function graphqlHTTP(options: Options): Middleware {
         const schema = optionsData.schema;
         const rootValue = optionsData.rootValue;
         const fieldResolver = optionsData.fieldResolver;
+        const typeResolver = optionsData.typeResolver;
+        const validationRules = optionsData.validationRules || [];
         const graphiql = optionsData.graphiql;
-        subscriptionsEndpoint = optionsData.subscriptionsEndpoint;
         context = optionsData.context || request;
-        let validationRules = specifiedRules;
-        if (optionsData.validationRules) {
-          validationRules = validationRules.concat(optionsData.validationRules);
-        }
+        subscriptionsEndpoint = optionsData.subscriptionsEndpoint;
 
         // GraphQL HTTP only supports GET and POST methods.
         if (request.method !== 'GET' && request.method !== 'POST') {
@@ -223,7 +256,7 @@ function graphqlHTTP(options: Options): Middleware {
         query = params.query;
         variables = params.variables;
         operationName = params.operationName;
-        showGraphiQL = graphiql && canDisplayGraphiQL(request, params);
+        showGraphiQL = canDisplayGraphiQL(request, params) && graphiql;
 
         // If there is no query, but GraphiQL will be displayed, do not produce
         // a result, otherwise return a 400: Bad Request.
@@ -247,7 +280,7 @@ function graphqlHTTP(options: Options): Middleware {
 
         // Parse source to AST, reporting any syntax error.
         try {
-          documentAST = parse(source);
+          documentAST = parseFn(source);
         } catch (syntaxError) {
           // Return 400: Bad Request if any syntax errors errors exist.
           response.statusCode = 400;
@@ -255,7 +288,11 @@ function graphqlHTTP(options: Options): Middleware {
         }
 
         // Validate AST, reporting any errors.
-        const validationErrors = validate(schema, documentAST, validationRules);
+        const validationErrors = validateFn(schema, documentAST, [
+          ...specifiedRules,
+          ...validationRules,
+        ]);
+
         if (validationErrors.length > 0) {
           // Return 400: Bad Request if any validation errors exist.
           response.statusCode = 400;
@@ -278,22 +315,22 @@ function graphqlHTTP(options: Options): Middleware {
             response.setHeader('Allow', 'POST');
             throw httpError(
               405,
-              `Can only perform a ${operationAST.operation} operation ` +
-                'from a POST request.',
+              `Can only perform a ${operationAST.operation} operation from a POST request.`,
             );
           }
         }
         // Perform the execution, reporting any errors creating the context.
         try {
-          return execute(
+          return executeFn({
             schema,
-            documentAST,
+            document: documentAST,
             rootValue,
-            context,
-            variables,
+            contextValue: context,
+            variableValues: variables,
             operationName,
             fieldResolver,
-          );
+            typeResolver,
+          });
         } catch (contextError) {
           // Return 400: Bad Request if any execution context errors exist.
           response.statusCode = 400;
@@ -302,7 +339,7 @@ function graphqlHTTP(options: Options): Middleware {
       })
       .then(result => {
         // Collect and apply any metadata extensions if a function was provided.
-        // http://facebook.github.io/graphql/#sec-Response-Format
+        // https://graphql.github.io/graphql-spec/#sec-Response-Format
         if (result && extensionsFn) {
           return Promise.resolve(
             extensionsFn({
@@ -331,15 +368,13 @@ function graphqlHTTP(options: Options): Middleware {
         // error, indicate as such with a generic status code.
         // Note: Information about the error itself will still be contained in
         // the resulting JSON payload.
-        // http://facebook.github.io/graphql/#sec-Data
+        // https://graphql.github.io/graphql-spec/#sec-Data
         if (response.statusCode === 200 && result && !result.data) {
           response.statusCode = 500;
         }
         // Format any encountered errors.
         if (result && result.errors) {
-          (result: any).errors = result.errors.map(
-            formatErrorFn || formatError,
-          );
+          (result: any).errors = result.errors.map(formatErrorFn);
         }
 
         // If allowed to show GraphiQL, present it instead of JSON.
@@ -349,6 +384,7 @@ function graphqlHTTP(options: Options): Middleware {
             variables,
             operationName,
             result,
+            options: typeof showGraphiQL !== 'boolean' ? showGraphiQL : {},
             subscriptionsEndpoint,
           });
           return sendResponse(response, 'text/html', payload);
@@ -371,54 +407,66 @@ function graphqlHTTP(options: Options): Middleware {
         }
       });
 
-    function resolveOptions(requestParams) {
-      return Promise.resolve(
+    async function resolveOptions(requestParams) {
+      const optionsResult =
         typeof options === 'function'
           ? options(request, response, requestParams)
-          : options,
-      ).then(optionsData => {
-        // Assert that optionsData is in fact an Object.
-        if (!optionsData || typeof optionsData !== 'object') {
-          throw new Error(
-            'GraphQL middleware option function must return an options object ' +
-              'or a promise which will be resolved to an options object.',
-          );
-        }
+          : options;
+      const optionsData = await optionsResult;
 
-        formatErrorFn = optionsData.formatError;
-        extensionsFn = optionsData.extensions;
-        pretty = optionsData.pretty;
-        return optionsData;
-      });
+      // Assert that optionsData is in fact an Object.
+      if (!optionsData || typeof optionsData !== 'object') {
+        throw new Error(
+          'GraphQL middleware option function must return an options object or a promise which will be resolved to an options object.',
+        );
+      }
+
+      if (optionsData.formatError) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          '`formatError` is deprecated and replaced by `customFormatErrorFn`. It will be removed in version 1.0.0.',
+        );
+      }
+
+      validateFn = optionsData.customValidateFn || validateFn;
+      executeFn = optionsData.customExecuteFn || executeFn;
+      parseFn = optionsData.customParseFn || parseFn;
+      formatErrorFn =
+        optionsData.customFormatErrorFn ||
+        optionsData.formatError ||
+        formatErrorFn;
+      extensionsFn = optionsData.extensions;
+      pretty = optionsData.pretty;
+      return optionsData;
     }
   };
 }
 
-export type GraphQLParams = {
+export type GraphQLParams = {|
   query: ?string,
-  variables: ?{ [name: string]: mixed },
+  variables: ?{ +[name: string]: mixed, ... },
   operationName: ?string,
   raw: ?boolean,
-};
+|};
 
 /**
  * Provided a "Request" provided by express or connect (typically a node style
  * HTTPClientRequest), Promise the GraphQL request parameters.
  */
 module.exports.getGraphQLParams = getGraphQLParams;
-function getGraphQLParams(request: $Request): Promise<GraphQLParams> {
-  return parseBody(request).then(bodyData => {
-    const urlData = (request.url && url.parse(request.url, true).query) || {};
-    return parseGraphQLParams(urlData, bodyData);
-  });
+async function getGraphQLParams(request: $Request): Promise<GraphQLParams> {
+  const bodyData = await parseBody(request);
+  const urlData = (request.url && url.parse(request.url, true).query) || {};
+
+  return parseGraphQLParams(urlData, bodyData);
 }
 
 /**
  * Helper function to get the GraphQL params from the request.
  */
 function parseGraphQLParams(
-  urlData: { [param: string]: mixed },
-  bodyData: { [param: string]: mixed },
+  urlData: { [param: string]: mixed, ... },
+  bodyData: { [param: string]: mixed, ... },
 ): GraphQLParams {
   // GraphQL Query string.
   let query = urlData.query || bodyData.query;
@@ -463,7 +511,7 @@ function canDisplayGraphiQL(request: $Request, params: GraphQLParams): boolean {
  * Helper function for sending a response using only the core Node server APIs.
  */
 function sendResponse(response: $Response, type: string, data: string): void {
-  const chunk = new Buffer(data, 'utf8');
+  const chunk = Buffer.from(data, 'utf8');
   response.setHeader('Content-Type', type + '; charset=utf-8');
   response.setHeader('Content-Length', String(chunk.length));
   response.end(chunk);
