@@ -48,7 +48,7 @@ export function renderGraphiQL(data: GraphiQLData): string {
   let subscriptionScripts = '';
   if (subscriptionsEndpoint) {
     subscriptionScripts = `
-    <script src="//unpkg.com/subscriptions-transport-ws@0.5.4/browser/client.js"></script>
+    <script src="//unpkg.com/subscriptions-transport-ws@0.9.16/browser/client.js"></script>
     <script src="//unpkg.com/graphiql-subscriptions-fetcher@0.0.2/browser/client.js"></script>
     `;
   }
