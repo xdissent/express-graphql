@@ -45,14 +45,6 @@ export function renderGraphiQL(data: GraphiQLData): string {
   const defaultQuery = data.options.defaultQuery;
   const subscriptionsEndpoint = data.subscriptionsEndpoint;
 
-  let subscriptionScripts = '';
-  if (subscriptionsEndpoint) {
-    subscriptionScripts = `
-    <script src="//unpkg.com/subscriptions-transport-ws@0.9.16/browser/client.js"></script>
-    <script src="//unpkg.com/graphiql-subscriptions-fetcher@0.0.2/browser/client.js"></script>
-    `;
-  }
-
   return `<!--
 The request to this GraphQL server provided the header "Accept: text/html"
 and as a result has been presented GraphiQL - an in-browser IDE for
@@ -102,7 +94,16 @@ add "&raw" to the end of the URL within a browser.
     // graphiql/graphiql.min.js
     ${loadFileStaticlyFromNPM('graphiql/graphiql.min.js')}
   </script>
-  ${subscriptionScripts}
+  <script>
+    // graphiql-subscriptions-fetcher/browser/client.js
+    ${loadFileStaticlyFromNPM(
+      'graphiql-subscriptions-fetcher/browser/client.js',
+    )}
+  </script>
+  <script>
+    // subscriptions-transport-ws/browser/client.js
+    ${loadFileStaticlyFromNPM('subscriptions-transport-ws/browser/client.js')}
+  </script>
 </head>
 <body>
   <div id="graphiql">Loading...</div>
