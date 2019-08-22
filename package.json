@@ -65,6 +65,7 @@
     "express": "4.17.1",
     "flow-bin": "0.102.0",
     "graphiql": "^0.13.2",
+    "graphiql-subscriptions-fetcher": "xdissent/GraphiQL-Subscriptions-Fetcher#build",
     "graphql": "14.4.2",
     "mocha": "6.1.4",
     "multer": "1.4.1",
@@ -75,6 +76,7 @@
     "react-dom": "^16.8.6",
     "restify": "4.3.2",
     "sinon": "7.3.2",
+    "subscriptions-transport-ws": "^0.9.16",
     "supertest": "4.0.2",
     "unfetch": "^4.1.0"
   },
